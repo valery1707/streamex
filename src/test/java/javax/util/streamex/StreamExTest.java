@@ -40,8 +40,10 @@ import java.util.Spliterator;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.BinaryOperator;
 import java.util.function.Function;
 import java.util.function.IntPredicate;
@@ -1488,5 +1490,16 @@ public class StreamExTest {
                 .foldLeft(StreamEx.of(0), (stream, i) -> stream.append(i).mapLast(x -> x + 2)))) {
             assertEquals(s.toString(), IntStreamEx.range(2, 52).boxed().prepend(0).toList(), s.get().toList());
         }
+    }
+    
+    @Test
+    public void testSplit2() {
+        long start = System.currentTimeMillis();
+        StreamEx.split2("a,b,c,d,e,f,g,h,i,j,k,l", Pattern.compile(",")).parallel().forEach(e -> {
+            LockSupport.parkNanos(TimeUnit.SECONDS.toNanos(1));
+            System.out.println(e);
+        });
+        long end = System.currentTimeMillis();
+        System.out.println(end - start);
     }
 }

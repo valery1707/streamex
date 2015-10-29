@@ -34,6 +34,7 @@ import java.util.Optional;
 import java.util.SortedMap;
 import java.util.Spliterator;
 import java.util.Spliterators;
+import java.util.Spliterators.AbstractSpliterator;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -43,12 +44,14 @@ import java.util.function.BiConsumer;
 import java.util.function.BiFunction;
 import java.util.function.BiPredicate;
 import java.util.function.BinaryOperator;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collector;
 import java.util.stream.Collectors;
@@ -1813,6 +1816,82 @@ public class StreamEx<T> extends AbstractStreamEx<T, StreamEx<T>> {
      */
     public static StreamEx<String> split(CharSequence str, Pattern pattern) {
         return new StreamEx<>(pattern.splitAsStream(str));
+    }
+    
+    public static StreamEx<String> split2(CharSequence input, Pattern pattern) {
+        class RegexSpliterator extends AbstractSpliterator<String> {
+            private final Matcher matcher;
+            // The start position of the next sub-sequence of input
+            // when current == input.length there are no more elements
+            private int current;
+            // null if the next element, if any, needs to obtained
+            private String nextElement;
+            // > 0 if there are N next empty elements
+            private int emptyElementCount;
+
+            RegexSpliterator() {
+                super(input.length(), Spliterator.ORDERED | Spliterator.NONNULL);
+                this.matcher = pattern.matcher(input);
+            }
+
+            @Override
+            public boolean tryAdvance(Consumer<? super String> action) {
+                if(!hasNext())
+                    return false;
+                action.accept(next());
+                return true;
+            }
+            
+            @Override
+            public long estimateSize() {
+                return input.length() - current;
+            }
+
+            private String next() {
+                if (emptyElementCount == 0) {
+                    String n = nextElement;
+                    nextElement = null;
+                    return n;
+                } else {
+                    emptyElementCount--;
+                    return "";
+                }
+            }
+
+            private boolean hasNext() {
+                if (nextElement != null || emptyElementCount > 0)
+                    return true;
+
+                if (current == input.length())
+                    return false;
+
+                // Consume the next matching element
+                // Count sequence of matching empty elements
+                while (matcher.find()) {
+                    nextElement = input.subSequence(current, matcher.start()).toString();
+                    current = matcher.end();
+                    if (!nextElement.isEmpty()) {
+                        return true;
+                    } else if (current > 0) { // no empty leading substring for zero-width
+                                              // match at the beginning of the input
+                        emptyElementCount++;
+                    }
+                }
+
+                // Consume last matching element
+                nextElement = input.subSequence(current, input.length()).toString();
+                current = input.length();
+                if (!nextElement.isEmpty()) {
+                    return true;
+                } else {
+                    // Ignore a terminal sequence of matching empty elements
+                    emptyElementCount = 0;
+                    nextElement = null;
+                    return false;
+                }
+            }
+        }
+        return of(new RegexSpliterator());
     }
 
     public static StreamEx<String> split(CharSequence str, String regex) {

@@ -15,18 +15,17 @@
  */
 package one.util.streamex.issues;
 
-import static java.lang.Integer.parseInt;
 import static org.junit.Assert.assertEquals;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NavigableSet;
 import java.util.Objects;
-import java.util.Map.Entry;
-import java.util.NavigableMap;
-import java.util.TreeMap;
-import java.util.function.Function;
+import java.util.TreeSet;
+import java.util.function.BiPredicate;
 import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -47,62 +46,52 @@ public class Issue0029 {
     private static final String _192_168_0_0_16 = "192.168.0.0/16";
     private static final String EXPECTED = "[T[" + _192_168_0_0_16 + "]]";
 
-    static class IntervalMap<E, U extends Comparable<U>> {
-        private final Function<E, U> endExtractor;
-        private final Function<E, U> startExtractor;
-        private final NavigableMap<U, E> map = new TreeMap<>();
+    static class IntervalMap<E> {
+        private final BiPredicate<? super E, ? super E> isParent;
+        private final NavigableSet<E> set;
 
-        public IntervalMap(Function<E, U> startExtractor, Function<E, U> endExtractor) {
-            this.startExtractor = startExtractor;
-            this.endExtractor = endExtractor;
+        public IntervalMap(Comparator<? super E> comparator, BiPredicate<? super E, ? super E> isParent) {
+            this.isParent = isParent;
+            this.set = new TreeSet<>(comparator);
         }
 
-        public void accept(E element) {
-            U start = startExtractor.apply(element);
-            U end = endExtractor.apply(element);
-            Entry<U, E> floorEntry = map.floorEntry(start);
-            if (floorEntry != null) {
-                Entry<U, E> higherEntry = map.higherEntry(start);
-                if (higherEntry != null && higherEntry.getValue() == floorEntry.getValue())
-                    return;
+        public void accept(E e) {
+            E left = set.floor(Objects.requireNonNull(e));
+            if (left != null && isParent.test(left, e)) {
+                return;
             }
-            Entry<U, E> ceilingEntry = map.ceilingEntry(end);
-            if (ceilingEntry != null) {
-                Entry<U, E> lowerEntry = map.lowerEntry(end);
-                if (lowerEntry != null && lowerEntry.getValue() == ceilingEntry.getValue())
-                    return;
+            Iterator<E> iterator = set.tailSet(e).iterator();
+            while (iterator.hasNext()) {
+                E right = iterator.next();
+                if (!isParent.test(e, right))
+                    break;
+                iterator.remove();
             }
-            map.subMap(start, true, end, true).clear();
-            map.put(start, element);
-            map.put(end, element);
+            set.add(e);
         }
 
-        public IntervalMap<E, U> combine(IntervalMap<E, U> other) {
-            if (map.isEmpty())
+        public IntervalMap<E> combine(IntervalMap<E> other) {
+            if (set.isEmpty())
                 return other;
             // More efficient implementation is possible
-            for (E t : other.asCollection()) {
-                accept(t);
-            }
+            other.set.forEach(this::accept);
             return this;
         }
 
-        public List<E> asCollection() {
-            List<E> result = new ArrayList<>(map.size() / 2);
-            Iterator<E> iterator = map.values().iterator();
-            while (iterator.hasNext()) {
-                E val = iterator.next();
-                if (!Objects.equals(val, iterator.next()))
-                    throw new InternalError(map.toString());
-                result.add(val);
-            }
-            return result;
+        public List<E> asList() {
+            return new ArrayList<>(set);
         }
 
-        public static <E, U extends Comparable<U>> Collector<E, ?, List<E>> collector(Function<E, U> startExtractor,
-                Function<E, U> endExtractor) {
-            return Collector.<E, IntervalMap<E, U>, List<E>> of(() -> new IntervalMap<>(startExtractor, endExtractor),
-                IntervalMap::accept, IntervalMap::combine, IntervalMap::asCollection);
+        public static <E> Collector<E, ?, List<E>> collector(Comparator<? super E> comparator,
+                BiPredicate<? super E, ? super E> isParent) {
+            return Collector.<E, IntervalMap<E>, List<E>> of(() -> new IntervalMap<>(comparator, isParent),
+                IntervalMap::accept, IntervalMap::combine, IntervalMap::asList);
+        }
+
+        public static <E extends Comparable<? super E>> Collector<E, ?, List<E>> collector(
+                BiPredicate<? super E, ? super E> isParent) {
+            return Collector.<E, IntervalMap<E>, List<E>> of(() -> new IntervalMap<>(Comparator.naturalOrder(),
+                    isParent), IntervalMap::accept, IntervalMap::combine, IntervalMap::asList);
         }
     }
 
@@ -126,14 +115,6 @@ public class Issue0029 {
             return Integer.parseInt(iPrefix);
         }
 
-        private int getLowerKey() {
-            return info.asInteger(info.getLowAddress());
-        }
-
-        private int getHigherKey() {
-            return info.asInteger(info.getHighAddress());
-        }
-
         @Override
         public String toString() {
             return "T[" + info.getCidrSignature() + "]";
@@ -141,15 +122,10 @@ public class Issue0029 {
 
         @Override
         public int compareTo(T o) {
-            String[] b1 = info.getNetworkAddress().split("\\.");
-            String[] b2 = o.info.getNetworkAddress().split("\\.");
-            int res;
-            for (int i = 0; i < 4; i++) {
-                res = parseInt(b1[0]) - parseInt(b2[0]);
-                if (res != 0)
-                    return res;
-            }
-            return rPrefix() - o.rPrefix();
+            int res = Integer.compare(info.asInteger(info.getAddress()), o.info.asInteger(o.info.getAddress()));
+            if(res != 0)
+                return res;
+            return Integer.compare(rPrefix(), o.rPrefix());
         }
     }
 
@@ -164,10 +140,9 @@ public class Issue0029 {
 
     @Test
     public void testCollect() {
-        List<T> result = StreamEx.of(getTestData()).collect(IntervalMap.collector(T::getLowerKey, T::getHigherKey));
+        List<T> result = StreamEx.of(getTestData()).collect(IntervalMap.collector(T::isParent));
         assertEquals(EXPECTED, result.toString());
-        List<T> resultPar = StreamEx.of(getTestData()).parallel()
-                .collect(IntervalMap.collector(T::getLowerKey, T::getHigherKey));
+        List<T> resultPar = StreamEx.of(getTestData()).parallel().collect(IntervalMap.collector(T::isParent));
         assertEquals(EXPECTED, resultPar.toString());
     }
 

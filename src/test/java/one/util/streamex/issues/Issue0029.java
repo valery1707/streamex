@@ -18,8 +18,15 @@ package one.util.streamex.issues;
 import static java.lang.Integer.parseInt;
 import static org.junit.Assert.assertEquals;
 
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Objects;
+import java.util.Map.Entry;
+import java.util.NavigableMap;
+import java.util.TreeMap;
+import java.util.function.Function;
+import java.util.stream.Collector;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
@@ -38,6 +45,73 @@ import one.util.streamex.StreamEx;
 public class Issue0029 {
 	private static final String _192_168_0_0_16 = "192.168.0.0/16";
 	private static final String EXPECTED = "[T[" + _192_168_0_0_16 + "]]";
+	
+	static class IntervalMap<E, U extends Comparable<U>>
+	{
+	    private final Function<E, U> endExtractor;
+        private final Function<E, U> startExtractor;
+        private final NavigableMap<U, E> map = new TreeMap<>();
+
+        public IntervalMap(Function<E, U> startExtractor, Function<E, U> endExtractor)
+	    {
+	        this.startExtractor = startExtractor;
+	        this.endExtractor = endExtractor;
+	    }
+        
+        public void accept(E element)
+        {
+            U start = startExtractor.apply(element);
+            U end = endExtractor.apply(element);
+            Entry<U, E> floorEntry = map.floorEntry(start);
+            if (floorEntry != null) {
+                Entry<U, E> higherEntry = map.higherEntry(start);
+                if (higherEntry != null && higherEntry.getValue() == floorEntry.getValue())
+                    return;
+            }
+            Entry<U, E> ceilingEntry = map.ceilingEntry(end);
+            if(ceilingEntry != null) {
+                Entry<U, E> lowerEntry = map.lowerEntry(end);
+                if(lowerEntry != null && lowerEntry.getValue() == ceilingEntry.getValue())
+                return;
+            }
+            map.subMap(start, true, end, true).clear();
+            map.put(start, element);
+            map.put(end, element);
+        }
+        
+        public IntervalMap<E, U> combine(IntervalMap<E, U> other)
+        {
+            if(map.isEmpty())
+                return other;
+            // More efficient implementation is possible
+            for(E t : other.asCollection())
+            {
+                accept(t);
+            }
+            return this;
+        }
+        
+        public List<E> asCollection()
+        {
+            List<E> result = new ArrayList<>(map.size()/2);
+            Iterator<E> iterator = map.values().iterator();
+            while(iterator.hasNext())
+            {
+                E val = iterator.next();
+                if(!Objects.equals(val, iterator.next()))
+                    throw new InternalError(map.toString());
+                result.add(val);
+            }
+            return result;
+        }
+        
+        public static <E, U extends Comparable<U>> Collector<E, ?, List<E>> collector(Function<E, U> startExtractor,
+                Function<E, U> endExtractor) {
+            return Collector.<E, IntervalMap<E, U>, List<E>> of(() -> new IntervalMap<>(startExtractor, endExtractor),
+                IntervalMap::accept, IntervalMap::combine, IntervalMap::asCollection);
+        }
+	}
+	
 
 	static class T implements Comparable<T> {
 		SubnetInfo info;
@@ -46,6 +120,7 @@ public class Issue0029 {
 			SubnetUtils tmp = new SubnetUtils(cidr);
 			tmp.setInclusiveHostCount(true);
 			this.info = tmp.getInfo();
+			
 		}
 
 		public boolean isParent(T child) {
@@ -57,6 +132,14 @@ public class Issue0029 {
 			String iPrefix = cidrSignature.substring(cidrSignature.lastIndexOf('/') + 1);
 			return Integer.parseInt(iPrefix);
 		}
+
+	    private int getLowerKey() {
+	        return info.asInteger(info.getLowAddress());
+	    }
+
+	    private int getHigherKey() {
+	        return info.asInteger(info.getHighAddress());
+	    }
 
 		@Override
 		public String toString() {
@@ -77,16 +160,6 @@ public class Issue0029 {
 		}
 	}
 
-	static class C {
-		public static final boolean isNested(T a, T b) {
-			return a.isParent(b) || b.isParent(a);
-		}
-
-		public static final T merge(T a, T b) {
-			return a.isParent(b) ? a : b;
-		}
-	}
-
 	private Stream<T> getTestData() {
 		// Stream of parent net 192.168.0.0/16 follow by the 50 first childs
 		// 192.168.X.0/24
@@ -97,11 +170,13 @@ public class Issue0029 {
 	}
 
 	@Test
-	public void testCollapse() {
-		List<T> result = StreamEx.of(getTestData()).sorted().collapse(C::isNested, C::merge).toList();
-		assertEquals(EXPECTED, result.toString());
+	public void testCollect() {
+	    List<T> result = StreamEx.of(getTestData()).collect(IntervalMap.collector(T::getLowerKey, T::getHigherKey));
+	    assertEquals(EXPECTED, result.toString());
+	    List<T> resultPar = StreamEx.of(getTestData()).parallel().collect(IntervalMap.collector(T::getLowerKey, T::getHigherKey));
+	    assertEquals(EXPECTED, resultPar.toString());
 	}
-
+	
 	@Test
 	public void testPlain() {
 		List<T> tmp = getTestData().sorted().collect(Collectors.toList());
